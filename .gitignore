@@ -1,4 +1,4 @@
 *.cache
 *.log
 *.json
-*.ipynb
+*.ipynb_checkpoints
