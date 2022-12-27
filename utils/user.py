@@ -10,7 +10,7 @@ from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.cluster import KMeans, MeanShift, estimate_bandwidth
 from scipy.spatial import distance
-
+from helper import *
 
 class User:
 
@@ -91,7 +91,11 @@ class User:
             if index % 200 == 0:
                 time.sleep(1)
 
-    def generate_playlists(self, num_playlists=None):
+    def generate_playlists(
+        self,
+        num_playlists=None,
+        num_songs=15
+        ):
         # for spotify
         saved_tracks = self.get_sp_saved_songs()
         audio_features = pd.DataFrame(self.sp.audio_features(
@@ -130,46 +134,36 @@ class User:
             remainder="passthrough"
         )
 
+        
         transformed_audio_features = pd.DataFrame(
-            col_transformer.fit_transform(transformed_audio_features),
+            col_transformer.fit_transform(audio_features),
             columns=col_transformer.get_feature_names_out())
-
-        # using MeanShift to get an estimate
-        bandwidth = estimate_bandwidth(transformed_audio_features.drop(["remainder__name",
-                                                                        "remainder__id"],
-                                                                       axis=1),
-                                       quantile=0.3,
-                                       n_jobs=-1)
-        ms = MeanShift(bandwidth=bandwidth,
-                       bin_seeding=False,
-                       n_jobs=-1,
-                       max_iter=5000)
-
-        ms.fit(transformed_audio_features.drop(["remainder__name",
-                                                "remainder__id"],
-                                               axis=1))
-
-        cluster_centers = ms.cluster_centers_
-        labels_unique = np.unique(ms.labels_)
-        n_clusters_ = len(labels_unique)
-        final_km = KMeans(
-            n_clusters=6, init='random',
+        
+        if num_playlists is None:
+            #If number of playlists have not been defined, get the best number of clusters
+            num_playlists, _ = get_num_clusters(transformed_audio_features.drop(["remainder__name",
+                                                          "remainder__id"],
+                                                         axis=1))
+        
+        km = KMeans(
+            n_clusters=num_playlists, init='random',
             n_init=10, max_iter=5000,
             tol=1e-04, random_state=42
         )
-        X_train_trans['cluster'] = final_km.fit_predict(
-            X_train_trans.drop(["remainname", "id"], axis=1))
+        
+        centers = km.cluster_centers_
+        transformed_audio_features['cluster'] = km.fit_predict(transformed_audio_features.drop(["remainder__name",
+                                                          "remainder__id"],
+                                                         axis=1))
 
-        def get_distance(row, centers):
-            return distance.cosine(row.drop(["id", "name", "cluster"]), centers[row['cluster']])
-
-        centers = final_km.cluster_centers_
-        X_distance = X_train_trans.copy()
-        X_distance["distance"] = X_distance.apply(
-            get_distance, centers=centers, axis=1)
-        top_15 = X_distance.sort_values(['distance']).groupby(
-            "cluster").head(10).reset_index(drop=True)
-        top_15[top_15['cluster'] == 2]
+        transformed_audio_features["distance"] = transformed_audio_features.apply(
+            get_cosine_distance, centers=centers, axis=1)
+        
+        top_songs = transformed_audio_features.sort_values(['distance']) \
+                                           .groupby("cluster") \
+                                           .head(num_songs) \
+                                           .reset_index(drop=True)
+        
 
 
 if __name__ == "__main__":

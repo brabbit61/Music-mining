@@ -1,7 +1,8 @@
 from sklearn.cluster import MeanShift, estimate_bandwidth
+from scipy.spatial import distance
 import numpy as np
 
-def get_clusters(audio_features):
+def get_num_clusters(audio_features):
     # using MeanShift to get an estimate
     bandwidth = estimate_bandwidth(audio_features,
                                     quantile=0.3,
@@ -18,3 +19,10 @@ def get_clusters(audio_features):
     n_clusters_ = len(labels_unique)
     
     return n_clusters_, cluster_centers
+
+def get_cosine_distance(row, centers):
+    return distance.cosine( row.drop(["remainder__name",
+                                     "remainder__id",
+                                     "cluster"],
+                                    axis=1),
+                            centers[row['cluster']])
