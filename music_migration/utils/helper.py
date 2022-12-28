@@ -22,7 +22,7 @@ def get_num_clusters(audio_features):
 
 def get_cosine_distance(row, centers):
     return distance.cosine( row.drop(["remainder__name",
+                                      "remainder__uri",
                                      "remainder__id",
-                                     "cluster"],
-                                    axis=1),
+                                     "cluster"]),
                             centers[row['cluster']])

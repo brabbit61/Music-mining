@@ -10,15 +10,17 @@ from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.cluster import KMeans, MeanShift, estimate_bandwidth
 from scipy.spatial import distance
-from helper import *
+import numpy as np
+from .helper import *
+
 
 class User:
 
     def __init__(self,
                  args):
 
-        self.sp_creds = json.load(open(args.spotify_credentials, 'r'))
-        self.yt = YTMusic(args.youtube_music_credentials)
+        self.sp_creds = json.load(open(args["spotify_credentials"], 'r'))
+        self.yt = YTMusic(args["youtube_music_credentials"])
         self.sp = None
 
     def set_client_scope(self, scope):
@@ -94,13 +96,13 @@ class User:
     def generate_playlists(
         self,
         num_playlists=None,
-        num_songs=15
-        ):
+        num_songs=15):
+        
         # for spotify
         saved_tracks = self.get_sp_saved_songs()
         audio_features = pd.DataFrame(self.sp.audio_features(
             tracks=[saved_tracks[0]['track']['uri']]))
-
+        
         for i in range(1, len(saved_tracks)):
             audio_features = pd.concat([audio_features,
                                         pd.DataFrame(
@@ -113,7 +115,6 @@ class User:
         audio_features = audio_features.merge(names, how='left', on="uri")
 
         audio_features.drop(columns=["type",
-                                     "uri",
                                      "track_href",
                                      "analysis_url"], inplace=True)
 
@@ -134,37 +135,60 @@ class User:
             remainder="passthrough"
         )
 
-        
         transformed_audio_features = pd.DataFrame(
             col_transformer.fit_transform(audio_features),
             columns=col_transformer.get_feature_names_out())
-        
+
         if num_playlists is None:
-            #If number of playlists have not been defined, get the best number of clusters
+            # If number of playlists have not been defined, get the best number of clusters
             num_playlists, _ = get_num_clusters(transformed_audio_features.drop(["remainder__name",
-                                                          "remainder__id"],
-                                                         axis=1))
-        
+                                                                                 "remainder__uri",
+                                                                                 "remainder__id"],
+                                                                                axis=1))
+            
         km = KMeans(
             n_clusters=num_playlists, init='random',
             n_init=10, max_iter=5000,
             tol=1e-04, random_state=42
         )
+        transformed_audio_features['cluster'] = km.fit_predict(transformed_audio_features.drop(["remainder__name",
+                                                                                                "remainder__uri",
+                                                                                                "remainder__id"],
+                                                                                               axis=1))
+        transformed_audio_features['cluster'] = transformed_audio_features['cluster'].astype(np.int64)
         
         centers = km.cluster_centers_
-        transformed_audio_features['cluster'] = km.fit_predict(transformed_audio_features.drop(["remainder__name",
-                                                          "remainder__id"],
-                                                         axis=1))
-
+        print(transformed_audio_features.head())
         transformed_audio_features["distance"] = transformed_audio_features.apply(
             get_cosine_distance, centers=centers, axis=1)
-        
-        top_songs = transformed_audio_features.sort_values(['distance']) \
-                                           .groupby("cluster") \
-                                           .head(num_songs) \
-                                           .reset_index(drop=True)
-        
 
+        top_songs = transformed_audio_features.sort_values(['distance']) \
+            .groupby("cluster") \
+            .head(num_songs) \
+            .reset_index(drop=True)
+        
+        for n in range(num_playlists):
+            self.create_playlist(f"Auto-Gen-Playlist-{0}", 
+                                 top_songs[top_songs['cluster'] == n]["remainder__uri"].tolist())
+
+    def create_playlist(
+        self,
+        playlist_name,
+        tracks_ids):
+        
+        print(tracks_ids)
+        
+        self.set_client_scope("user-library-read,playlist-modify-private,playlist-modify-public")
+        playlist_description = ''
+
+        # Create the playlist
+        playlist = self.sp.user_playlist_create(self.sp.current_user()['id'],
+                                                playlist_name,
+                                                description=playlist_description)
+        
+        self.sp.playlist_add_items(playlist['id'],
+                                   tracks_ids)
+        
 
 if __name__ == "__main__":
 
@@ -179,8 +203,8 @@ if __name__ == "__main__":
         metavar='Y',
         type=str,
         help='Provide the file location containing the youtube music credentials')
-
+    
     args = parser.parse_args()
     # print(args['youtube_music_credentials'])
     user = User(args)
-    user.transfer_saved_tracks_yt_to_sp()
+    user.generate_playlists(num_songs=35)
