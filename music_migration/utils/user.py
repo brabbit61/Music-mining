@@ -176,8 +176,6 @@ class User:
         playlist_name,
         tracks_ids):
         
-        print(tracks_ids)
-        
         self.set_client_scope("user-library-read,playlist-modify-private,playlist-modify-public")
         playlist_description = ''
 
