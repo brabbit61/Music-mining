@@ -12,12 +12,12 @@ from sklearn.cluster import KMeans, MeanShift, estimate_bandwidth
 from scipy.spatial import distance
 import numpy as np
 from .helper import *
-
+from collections import Counter
 
 class User:
-
-    def __init__(self,
-                 args):
+    # TODO: Add function to migrate playlists as well
+    
+    def __init__(self, args):
 
         self.sp_creds = json.load(open(args["spotify_credentials"], 'r'))
         self.yt = YTMusic(args["youtube_music_credentials"])
@@ -44,6 +44,7 @@ class User:
     def get_yt_saved_songs(self):
         return self.yt.get_liked_songs(limit=None)
 
+        
     def get_sp_saved_songs(self):
         saved_tracks = []
         offset = 0
@@ -58,9 +59,42 @@ class User:
                 limit=None, offset=offset).get('items')
 
         return saved_tracks
+    
+    def get_sp_playlist_tracks(self, playlist_uri):
+        saved_tracks = []
+        offset = 0
+        self.set_client_scope("playlist-read-private,playlist-read-collaborative")
+
+        tracks = self.sp.user_playlist_tracks(limit=None, 
+                                              playlist_id=playlist_uri).get('items')
+        
+        while tracks != []:
+            saved_tracks.extend(tracks)
+            offset += len(tracks)
+            tracks = self.sp.user_playlist_tracks(limit=None, 
+                                                  playlist_id=playlist_uri,
+                                                  offset=offset).get('items')
+
+        return saved_tracks
+    
+    def get_sp_playlists(self):
+        all_playlists = []
+        offset = 0
+        self.set_client_scope("playlist-read-private,playlist-read-collaborative")
+        
+        playlists = self.sp.current_user_playlists(limit=None).get('items')
+
+        while playlists != []:
+            all_playlists.extend(playlists)
+            offset += len(playlists)
+            playlists = self.sp.current_user_playlists(
+                limit=None,
+                offset=offset).get('items')
+
+        return all_playlists
 
     def transfer_saved_tracks_yt_to_sp(self):
-
+        
         sp_saved_tracks = self.get_sp_saved_songs()
         yt_saved_tracks = self.get_yt_saved_songs()
 
@@ -93,13 +127,15 @@ class User:
             if index % 200 == 0:
                 time.sleep(1)
 
-    def generate_playlists(
-        self,
-        num_playlists=None,
-        num_songs=15):
+    def generate_playlists(self, num_playlists=None, num_songs=15):
         
         # for spotify
         saved_tracks = self.get_sp_saved_songs()
+        
+        if len(saved_tracks) == 0:
+            return
+        
+        # TODO:  Add Genre information for each track below so that it can be used during clustering
         audio_features = pd.DataFrame(self.sp.audio_features(
             tracks=[saved_tracks[0]['track']['uri']]))
         
@@ -168,13 +204,10 @@ class User:
             .reset_index(drop=True)
         
         for n in range(num_playlists):
-            self.create_playlist(f"Auto-Gen-Playlist-{0}", 
+            self.create_playlist(f"Auto-Gen-Playlist-{n}", 
                                  top_songs[top_songs['cluster'] == n]["remainder__uri"].tolist())
 
-    def create_playlist(
-        self,
-        playlist_name,
-        tracks_ids):
+    def create_playlist(self, playlist_name, tracks_ids):
         
         self.set_client_scope("user-library-read,playlist-modify-private,playlist-modify-public")
         playlist_description = ''
@@ -187,7 +220,53 @@ class User:
         self.sp.playlist_add_items(playlist['id'],
                                    tracks_ids)
         
-
+    def create_similar_playlist(self, playlist_name):
+        self.set_client_scope('user-read-private')
+        country_code = self.sp.me()['country']
+        self.set_client_scope("playlist-read-private,playlist-read-collaborative,playlist-modify-private,playlist-modify-public")
+        playlists = self.get_sp_playlists()
+        tracks = None
+        
+        for playlist in playlists:
+            if playlist['name'] == playlist_name:
+                tracks = self.get_sp_playlist_tracks(playlist_uri=playlist['uri'])
+                break
+        
+        if tracks == None:
+            return
+        
+        # seed_tracks = ','.join([track['track']['uri'] for track in tracks])
+        
+        artists = Counter()
+        genres = Counter()
+        
+        for track in tracks:
+            track_data = self.sp.track(track_id=track['track']['uri'])
+            
+            for artist in track_data['artists']:
+                artists[artist['uri']] += 1
+                if artist.get('genres'):
+                    for genre in artist.get('genres'):
+                        genres[genre] += 1
+        
+        # Max number of seeds allowed is 5 (inclusive of all: tracks, artists and genres)
+        
+        # seed_artists = ','.join(sorted(artists, key=artists.get, reverse=True)[:5])
+        # seed_genres = ','.join(sorted(artists, key=artists.get, reverse=True)[:5])
+        seed_artists = sorted(artists, key=artists.get, reverse=True)[:2]
+        seed_genres = sorted(genres, key=genres.get, reverse=True)[:2]
+        seed_tracks = [track['track']['uri'] for track in tracks[:5-len(seed_artists)-len(seed_genres)]]
+        
+        recommended_tracks = self.sp.recommendations(seed_artists=seed_artists,
+                                seed_genres=seed_genres,
+                                seed_tracks=seed_tracks,
+                                limit=20,
+                                country=country_code)
+        
+        tracks_uri = [track['uri'] for track in recommended_tracks['tracks']]
+        self.create_playlist(f"Similar to {playlist_name}", tracks_uri)
+        
+                
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Process some integers.')
@@ -203,6 +282,5 @@ if __name__ == "__main__":
         help='Provide the file location containing the youtube music credentials')
     
     args = parser.parse_args()
-    # print(args['youtube_music_credentials'])
     user = User(args)
     user.generate_playlists(num_songs=35)
