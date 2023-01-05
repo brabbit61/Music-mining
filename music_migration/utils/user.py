@@ -1,18 +1,19 @@
 import json
 import time
 import argparse
+import math
+import pandas as pd
+import numpy as np
+from collections import Counter
 from ytmusicapi import YTMusic
 from spotipy.oauth2 import SpotifyOAuth
 from spotipy import Spotify
 from tqdm import tqdm
-import pandas as pd
 from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.cluster import KMeans, MeanShift, estimate_bandwidth
 from scipy.spatial import distance
-import numpy as np
 from .helper import *
-from collections import Counter
 
 class User:
     # TODO: Add function to migrate playlists as well
@@ -44,7 +45,36 @@ class User:
     def get_yt_saved_songs(self):
         return self.yt.get_liked_songs(limit=None)
 
+    def get_yt_playlists(self):
+
+        saved_playlists = self.yt.get_library_playlists(limit=None)
+        all_playlists = {}
         
+        for playlist in saved_playlists:
+            
+            if playlist['title'] == "Your Likes":
+                continue
+            
+            all_playlists[playlist['title']] = []
+            playlist_data = self.yt.get_playlist(playlistId=playlist['playlistId'], limit=None)
+            tracks = playlist_data['tracks']
+            
+            for track in tracks:
+                track_data = {}
+                
+                track_data['track_name'] = track['title']
+                
+                if track['album']:
+                    track_data['album'] = track['album']['name']
+
+                track_data['artists'] = []
+                for artist in track['artists']:
+                    track_data['artists'].append(artist['name'])
+                
+                all_playlists[playlist['title']].append(track_data)
+                    
+        return all_playlists
+             
     def get_sp_saved_songs(self):
         saved_tracks = []
         offset = 0
@@ -126,6 +156,30 @@ class User:
 
             if index % 200 == 0:
                 time.sleep(1)
+
+    def transfer_saved_playlists_yt_to_sp(self):
+        yt_saved_playlists = self.get_yt_playlists()
+        self.set_client_scope("playlist-modify-private")
+
+        for playlist_name, tracks in yt_saved_playlists.items():
+            tracks_uri = []
+            for track in tracks:
+            
+                query_string = "remaster%20track:{}%20type:track" \
+                            .format(track['track_name'])
+
+                if "album" in yt_saved_playlists[playlist_name]:
+                    query_string += f"%20album:{track['album']}"
+
+                for artist in track['artists']:
+                    query_string += f"%20artist:{artist}"
+
+                result = self.sp.search(q=query_string, limit=1)
+
+                if len(result['tracks'].get('items')) > 0:
+                    tracks_uri.append(result['tracks'].get('items')[0]['uri'])
+            
+            self.create_playlist(playlist_name, tracks_uri)
 
     def generate_playlists(self, num_playlists=None, num_songs=15):
         
@@ -217,8 +271,9 @@ class User:
                                                 playlist_name,
                                                 description=playlist_description)
         
-        self.sp.playlist_add_items(playlist['id'],
-                                   tracks_ids)
+        # Maximum songs you can add in one call = 100
+        for i in range(math.ceil(len(tracks_ids)/100)):
+            self.sp.playlist_add_items(playlist['id'], tracks_ids[i*100 : (i+1)*100])
         
     def create_similar_playlist(self, playlist_name):
         self.set_client_scope('user-read-private')
